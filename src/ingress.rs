@@ -70,8 +70,12 @@ pub async fn capture(
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 
 // list the latest 10 documents in the ingress column family
-pub async fn list(state: State<AppState>) -> Result<impl IntoResponse, AppError> {
+pub async fn list(
+    state: State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, AppError> {
     let tree = state.storage.get_handle("ingress")?;
+    let after_key = params.get("after_key").map(|k| URL_SAFE.decode(k).unwrap());
 
     let mut html = String::from(
         r#"<!DOCTYPE html>
@@ -81,13 +85,33 @@ pub async fn list(state: State<AppState>) -> Result<impl IntoResponse, AppError>
 <ol>"#,
     );
 
-    for item in tree.iter().rev().take(10) {
+    let mut items = Vec::new();
+    let iter = match after_key {
+        Some(key) => tree.range(..key).rev(),
+        None => tree.iter().rev(),
+    };
+
+    for item in iter.take(11) {
         let (key, _) = item?;
-        let encoded_key = URL_SAFE.encode(&key);
+        items.push(key);
+    }
+
+    for key in items.iter().take(10) {
+        let encoded_key = URL_SAFE.encode(key);
         html.push_str(&format!("<li>{encoded_key}</li>"));
     }
 
-    html.push_str("</ol></body></html>");
+    html.push_str("</ol>");
+
+    if items.len() > 10 {
+        let last_key = URL_SAFE.encode(&items[9]);
+        html.push_str(&format!(
+            r#"<a href="?after_key={}">Next page</a>"#,
+            last_key
+        ));
+    }
+
+    html.push_str("</body></html>");
 
     Ok(axum::response::Html(html))
 }
