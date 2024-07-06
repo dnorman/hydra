@@ -3,15 +3,13 @@ mod ingress;
 mod storage;
 use std::{ops::Deref, sync::Arc};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
+    Router,
 };
-use error::AppError;
 
 #[derive(Clone)]
 pub struct AppState(Arc<AppStateInner>);
@@ -41,14 +39,19 @@ async fn main() -> Result<()> {
 
     // build our application with a route
     let app = Router::new()
-        // .route("/", get(root))
+        .route("/", get(root))
         .route("/ingress", post(ingress::capture))
         .route("/ingress", get(ingress::list))
         .with_state(state);
 
     // run our app with hyper, listening globally on port 3000
+    eprintln!("Server running on http://0.0.0.0:3000");
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
-    println!("Server running on http://0.0.0.0:3000");
+
     Ok(())
+}
+
+pub async fn root() -> Result<String, StatusCode> {
+    Ok("Hello, world!".to_string())
 }

@@ -1,6 +1,6 @@
 use axum::{
     extract::{Host, Path, Query, State},
-    http::{HeaderMap, Method, StatusCode},
+    http::{HeaderMap, Method},
     response::IntoResponse,
     Json,
 };
@@ -27,7 +27,7 @@ struct IngressLog {
 
 #[derive(Serialize, Deserialize)]
 struct IngressResponse {
-    id: u64,
+    event_id: Ulid,
 }
 
 pub async fn capture(
@@ -36,7 +36,7 @@ pub async fn capture(
     // remote_addr: Option<SocketAddr>,
     method: Method,
     Host(host): Host,
-    path: Path<String>,
+    path: Path<Vec<String>>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
     body: Bytes,
@@ -44,12 +44,14 @@ pub async fn capture(
     let event_id = ulid::Ulid::new();
     let key = format!("test|{}", event_id);
 
+    println!("Ingress request: {:?}", event_id);
+
     let log = IngressLog {
         event_id,
         remote_addr: None,
         method: method.to_string(),
         host,
-        path: path.to_string(),
+        path: path.join("/").to_string(),
         query,
         date: chrono::Utc::now(),
         body,
@@ -62,7 +64,7 @@ pub async fn capture(
     let handle = state.storage.get_handle("ingress")?;
     handle.insert(key, bincode::serialize(&log)?)?;
 
-    Ok(Json(IngressResponse { id: 1 }))
+    Ok(Json(IngressResponse { event_id }))
 }
 
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};

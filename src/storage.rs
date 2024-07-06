@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use sled::{Db, IVec}; // Import Result and anyhow from the anyhow crate
+use sled::{Db}; // Import Result and anyhow from the anyhow crate
 
 pub struct StorageEngine {
     pub db: Db,
