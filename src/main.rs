@@ -5,7 +5,6 @@ use std::{ops::Deref, sync::Arc};
 
 use anyhow::Result;
 use axum::{
-    extract::State,
     http::StatusCode,
     routing::{get, post},
     Router,
