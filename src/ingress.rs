@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use axum::{
     extract::{Host, Path, Query, State},
     http::{HeaderMap, Method},
@@ -5,6 +6,7 @@ use axum::{
     Json,
 };
 use bytes::Bytes;
+use sled::IVec;
 use std::{collections::HashMap, net::SocketAddr};
 
 use serde::{Deserialize, Serialize};
@@ -69,49 +71,169 @@ pub async fn capture(
 
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 
-// list the latest 10 documents in the ingress column family
 pub async fn list(
     state: State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let tree = state.storage.get_handle("ingress")?;
-    let after_key = params.get("after_key").map(|k| URL_SAFE.decode(k).unwrap());
+    let earlier_than = params
+        .get("earlier_than")
+        .map(|k| URL_SAFE.decode(k).unwrap());
+    let later_than = params
+        .get("later_than")
+        .map(|k| URL_SAFE.decode(k).unwrap());
+    let limit = params
+        .get("limit")
+        .and_then(|l| l.parse::<usize>().ok())
+        .unwrap_or(10);
+    let fetch_limit = limit + 1; // Fetch one extra to determine if there's a next page
+
+    let (items, has_earlier_page, has_later_page) = match (earlier_than, later_than) {
+        (Some(end), None) => {
+            let mut vec: Vec<_> = tree
+                .range(..end)
+                .rev()
+                .take(fetch_limit)
+                .map(|item| item.unwrap())
+                .collect();
+            let has_earlier = vec.len() > limit;
+            vec.truncate(limit);
+            vec.reverse();
+            (vec, has_earlier, true)
+        }
+        (None, Some(start)) => {
+            let vec: Vec<_> = tree
+                .range(start..)
+                .take(fetch_limit)
+                .map(|item| item.unwrap())
+                .collect();
+            let has_later = vec.len() > limit;
+            (vec[..limit.min(vec.len())].to_vec(), false, has_later)
+        }
+        (None, None) => {
+            let vec: Vec<_> = tree
+                .iter()
+                .rev()
+                .take(fetch_limit)
+                .map(|item| item.unwrap())
+                .collect();
+            let has_earlier = vec.len() > limit;
+            (vec[..limit.min(vec.len())].to_vec(), has_earlier, false)
+        }
+        _ => return Err(anyhow!("Cannot specify both earlier_than and later_than").into()),
+    };
 
     let mut html = String::from(
         r#"<!DOCTYPE html>
 <html>
+<head>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+        .container {
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .navigation {
+            margin-bottom: 20px;
+        }
+        .navigation a {
+            margin-right: 10px;
+        }
+        .table-container {
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+            position: sticky;
+            top: 0;
+        }
+        pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
 <body>
-<h1>Latest 10 Documents in the Ingress Log</h1>
-<ol>"#,
+<div class="container">
+    <h1>Documents in the Ingress Log</h1>
+    <div class="navigation">"#,
     );
 
-    let mut items = Vec::new();
-    let iter = match after_key {
-        Some(key) => tree.range(..key).rev(),
-        None => tree.iter().rev(),
-    };
-
-    for item in iter.take(11) {
-        let (key, _) = item?;
-        items.push(key);
-    }
-
-    for key in items.iter().take(10) {
-        let encoded_key = URL_SAFE.encode(key);
-        html.push_str(&format!("<li>{encoded_key}</li>"));
-    }
-
-    html.push_str("</ol>");
-
-    if items.len() > 10 {
-        let last_key = URL_SAFE.encode(&items[9]);
+    if has_earlier_page {
+        let first_key = URL_SAFE.encode(&items.first().unwrap().0);
         html.push_str(&format!(
-            r#"<a href="?after_key={}">Next page</a>"#,
-            last_key
+            r#"<a href="?earlier_than={}&limit={}">Earlier events</a>"#,
+            first_key, limit
         ));
     }
 
-    html.push_str("</body></html>");
+    if has_later_page {
+        let last_key = URL_SAFE.encode(&items.last().unwrap().0);
+        html.push_str(&format!(
+            r#"<a href="?later_than={}&limit={}">Later events</a>"#,
+            last_key, limit
+        ));
+    }
+
+    html.push_str(
+        r#"</div>
+    <div class="table-container">
+    <table>
+    <tr>
+        <th>Event ID</th>
+        <th>Date</th>
+        <th>Remote Addr</th>
+        <th>Method</th>
+        <th>Host</th>
+        <th>Path</th>
+        <th>Query</th>
+        <th>Headers</th>
+        <th>Body</th>
+    </tr>"#,
+    );
+
+    for (key, value) in &items {
+        let encoded_key = URL_SAFE.encode(key);
+        let log: IngressLog = bincode::deserialize(value)?;
+        let body_utf8 = String::from_utf8_lossy(&log.body);
+        html.push_str(&format!(
+            r#"<tr>
+                <td>{}</td>
+                <td>{}</td>
+                <td>{}</td>
+                <td>{}</td>
+                <td>{}</td>
+                <td>{}</td>
+                <td><pre>{}</pre></td>
+                <td><pre>{}</pre></td>
+                <td><pre>{}</pre></td>
+            </tr>"#,
+            log.event_id,
+            log.date,
+            log.remote_addr
+                .map_or("N/A".to_string(), |addr| addr.to_string()),
+            html_escape::encode_text(&log.method),
+            html_escape::encode_text(&log.host),
+            html_escape::encode_text(&log.path),
+            html_escape::encode_text(&serde_json::to_string_pretty(&log.query)?),
+            html_escape::encode_text(&serde_json::to_string_pretty(&log.headers)?),
+            html_escape::encode_text(&body_utf8),
+        ));
+    }
+
+    html.push_str("</table></div></div></body></html>");
 
     Ok(axum::response::Html(html))
 }
