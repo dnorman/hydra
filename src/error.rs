@@ -3,6 +3,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
+#[derive(Debug)]
 pub struct AppError(anyhow::Error);
 
 impl<E> From<E> for AppError

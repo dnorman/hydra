@@ -31,7 +31,7 @@ impl StorageEngine {
     }
 
     // Automatically creates a tree if it does not exist and returns a handle
-    pub fn get_handle(&self, name: &str) -> Result<sled::Tree> {
+    pub fn subtree(&self, name: &str) -> Result<sled::Tree> {
         let tree = self.db.open_tree(name)?;
         Ok(tree)
     }

@@ -14,7 +14,7 @@ use ulid::Ulid;
 
 use crate::{
     error::AppError,
-    fetch::{fetch, FetchResult},
+    fetch::{fetch, FetchQuery, FetchResult, Record},
     AppState,
 };
 
@@ -29,6 +29,12 @@ struct IngressLog {
     query: HashMap<String, String>,
     headers: HashMap<String, String>,
     body: Bytes,
+}
+impl Record for IngressLog {
+    type ID = Ulid;
+    fn id(&self) -> &Self::ID {
+        &self.event_id
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -67,7 +73,7 @@ pub async fn capture(
             .collect(),
     };
 
-    let handle = state.storage.get_handle("ingress")?;
+    let handle = state.storage.subtree("ingress")?;
     handle.insert(key, bincode::serialize(&log)?)?;
 
     Ok(Json(IngressResponse { event_id }))
@@ -75,17 +81,36 @@ pub async fn capture(
 
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 
+fn decode_ulid(encoded: &str) -> anyhow::Result<Ulid> {
+    let decoded = URL_SAFE.decode(encoded)?;
+    let byte_array: [u8; 16] = decoded
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Invalid ULID bytes"))?;
+    Ok(Ulid::from_bytes(byte_array))
+}
+
 pub async fn list(
     state: State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
-    let tree = state.storage.get_handle("ingress")?;
-    let fetch_result = fetch::<IngressLog>(
-        &tree,
-        params.get("earlier_than"),
-        params.get("later_than"),
-        params.get("limit"),
-    )?;
+    let tree = state.storage.subtree("ingress")?;
+
+    let mut query = FetchQuery::new();
+
+    if let Some(earlier_than) = params.get("earlier_than") {
+        query = query.earlier_than(decode_ulid(earlier_than)?);
+    }
+
+    if let Some(later_than) = params.get("later_than") {
+        query = query.later_than(decode_ulid(later_than)?);
+    }
+
+    if let Some(limit) = params.get("limit").and_then(|s| s.parse().ok()) {
+        query = query.limit(limit);
+    }
+
+    let fetch_result = fetch::<IngressLog, _>(&tree, query)?;
+
     render_ingress_logs_html(&fetch_result, params.get("limit"))
 }
 
@@ -145,7 +170,7 @@ fn render_ingress_logs_html(
     <div class="navigation">"#,
     );
 
-    if fetch_result.has_earlier_page {
+    if fetch_result.earlier_records_present {
         let first_key = URL_SAFE.encode(&fetch_result.items.first().unwrap().0);
         html.push_str(&format!(
             r#"<a href="?earlier_than={}&limit={}">Earlier events</a>"#,
@@ -153,7 +178,7 @@ fn render_ingress_logs_html(
         ));
     }
 
-    if fetch_result.has_later_page {
+    if fetch_result.later_records_present {
         let last_key = URL_SAFE.encode(&fetch_result.items.last().unwrap().0);
         html.push_str(&format!(
             r#"<a href="?later_than={}&limit={}">Later events</a>"#,
