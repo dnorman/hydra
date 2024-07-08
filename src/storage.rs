@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use sled::{Db}; // Import Result and anyhow from the anyhow crate
+use sled::{Config, Db}; // Import Result and anyhow from the anyhow crate
 
 pub struct StorageEngine {
     pub db: Db,
@@ -17,6 +17,15 @@ impl StorageEngine {
         let dbpath = dir.join("sled");
 
         let db = sled::open(&dbpath)?;
+
+        Ok(Self { db })
+    }
+    pub fn new_test() -> Result<Self> {
+        let db = Config::new()
+            .temporary(true)
+            .flush_every_ms(None)
+            .open()
+            .unwrap();
 
         Ok(Self { db })
     }

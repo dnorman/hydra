@@ -12,7 +12,11 @@ use std::{collections::HashMap, net::SocketAddr};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
-use crate::{error::AppError, AppState};
+use crate::{
+    error::AppError,
+    fetch::{fetch, FetchResult},
+    AppState,
+};
 
 #[derive(Serialize, Deserialize)]
 struct IngressLog {
@@ -76,52 +80,22 @@ pub async fn list(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, AppError> {
     let tree = state.storage.get_handle("ingress")?;
-    let earlier_than = params
-        .get("earlier_than")
-        .map(|k| URL_SAFE.decode(k).unwrap());
-    let later_than = params
-        .get("later_than")
-        .map(|k| URL_SAFE.decode(k).unwrap());
-    let limit = params
-        .get("limit")
+    let fetch_result = fetch::<IngressLog>(
+        &tree,
+        params.get("earlier_than"),
+        params.get("later_than"),
+        params.get("limit"),
+    )?;
+    render_ingress_logs_html(&fetch_result, params.get("limit"))
+}
+
+fn render_ingress_logs_html(
+    fetch_result: &FetchResult<IngressLog>,
+    limit_param: Option<&String>,
+) -> Result<impl IntoResponse, AppError> {
+    let limit = limit_param
         .and_then(|l| l.parse::<usize>().ok())
         .unwrap_or(10);
-    let fetch_limit = limit + 1; // Fetch one extra to determine if there's a next page
-
-    let (items, has_earlier_page, has_later_page) = match (earlier_than, later_than) {
-        (Some(end), None) => {
-            let mut vec: Vec<_> = tree
-                .range(..end)
-                .rev()
-                .take(fetch_limit)
-                .map(|item| item.unwrap())
-                .collect();
-            let has_earlier = vec.len() > limit;
-            vec.truncate(limit);
-            vec.reverse();
-            (vec, has_earlier, true)
-        }
-        (None, Some(start)) => {
-            let vec: Vec<_> = tree
-                .range(start..)
-                .take(fetch_limit)
-                .map(|item| item.unwrap())
-                .collect();
-            let has_later = vec.len() > limit;
-            (vec[..limit.min(vec.len())].to_vec(), false, has_later)
-        }
-        (None, None) => {
-            let vec: Vec<_> = tree
-                .iter()
-                .rev()
-                .take(fetch_limit)
-                .map(|item| item.unwrap())
-                .collect();
-            let has_earlier = vec.len() > limit;
-            (vec[..limit.min(vec.len())].to_vec(), has_earlier, false)
-        }
-        _ => return Err(anyhow!("Cannot specify both earlier_than and later_than").into()),
-    };
 
     let mut html = String::from(
         r#"<!DOCTYPE html>
@@ -171,16 +145,16 @@ pub async fn list(
     <div class="navigation">"#,
     );
 
-    if has_earlier_page {
-        let first_key = URL_SAFE.encode(&items.first().unwrap().0);
+    if fetch_result.has_earlier_page {
+        let first_key = URL_SAFE.encode(&fetch_result.items.first().unwrap().0);
         html.push_str(&format!(
             r#"<a href="?earlier_than={}&limit={}">Earlier events</a>"#,
             first_key, limit
         ));
     }
 
-    if has_later_page {
-        let last_key = URL_SAFE.encode(&items.last().unwrap().0);
+    if fetch_result.has_later_page {
+        let last_key = URL_SAFE.encode(&fetch_result.items.last().unwrap().0);
         html.push_str(&format!(
             r#"<a href="?later_than={}&limit={}">Later events</a>"#,
             last_key, limit
@@ -204,9 +178,8 @@ pub async fn list(
     </tr>"#,
     );
 
-    for (key, value) in &items {
+    for (key, log) in &fetch_result.items {
         let encoded_key = URL_SAFE.encode(key);
-        let log: IngressLog = bincode::deserialize(value)?;
         let body_utf8 = String::from_utf8_lossy(&log.body);
         html.push_str(&format!(
             r#"<tr>

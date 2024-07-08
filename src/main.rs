@@ -1,7 +1,10 @@
+mod appstate;
 mod error;
+mod fetch;
 mod ingress;
 mod storage;
-use std::{ops::Deref, sync::Arc};
+
+use appstate::AppState;
 
 use anyhow::Result;
 use axum::{
@@ -9,26 +12,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-
-#[derive(Clone)]
-pub struct AppState(Arc<AppStateInner>);
-pub struct AppStateInner {
-    pub storage: storage::StorageEngine,
-}
-
-impl AppState {
-    pub fn new() -> Result<Self> {
-        let storage = storage::StorageEngine::new()?;
-        Ok(Self(Arc::new(AppStateInner { storage })))
-    }
-}
-
-impl Deref for AppState {
-    type Target = Arc<AppStateInner>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
