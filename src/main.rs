@@ -1,7 +1,7 @@
 mod appstate;
 mod error;
 mod fetch;
-// mod ingress;
+mod ingress;
 mod storage;
 
 use appstate::AppState;
@@ -22,8 +22,8 @@ async fn main() -> Result<()> {
     // build our application with a route
     let app = Router::new()
         .route("/", get(root))
-        // .route("/ingress", post(ingress::capture))
-        // .route("/ingress", get(ingress::list))
+        .route("/ingress", post(ingress::capture))
+        .route("/ingress", get(ingress::list))
         .with_state(state);
 
     // run our app with hyper, listening globally on port 3000

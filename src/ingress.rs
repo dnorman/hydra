@@ -81,14 +81,6 @@ pub async fn capture(
 
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 
-fn decode_ulid(encoded: &str) -> anyhow::Result<Ulid> {
-    let decoded = URL_SAFE.decode(encoded)?;
-    let byte_array: [u8; 16] = decoded
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Invalid ULID bytes"))?;
-    Ok(Ulid::from_bytes(byte_array))
-}
-
 pub async fn list(
     state: State<AppState>,
     Query(params): Query<HashMap<String, String>>,
@@ -97,21 +89,29 @@ pub async fn list(
 
     let mut query = FetchQuery::new();
 
-    if let Some(cursor) = params.get("cursor") {
-        query = query.cursor(decode_ulid(cursor)?);
-    }
+    let (cursor, order) = if let Some(following) = params.get("following") {
+        (Some(following.as_bytes().to_vec()), Order::Ascending)
+    } else if let Some(preceding) = params.get("preceding") {
+        (Some(preceding.as_bytes().to_vec()), Order::Descending)
+    } else {
+        (None, Order::Descending)
+    };
 
-    let order = params
-        .get("order")
-        .and_then(|o| o.parse().ok())
-        .unwrap_or(Order::Descending);
+    if let Some(cursor) = cursor {
+        query = query.cursor(cursor);
+    }
     query = query.order(order);
 
     if let Some(limit) = params.get("limit").and_then(|s| s.parse().ok()) {
         query = query.limit(limit);
     }
 
-    let fetch_result = fetch::<IngressLog, _>(&tree, query)?;
+    let mut fetch_result = fetch::<IngressLog, _>(&tree, query)?;
+
+    // Reverse the items if the order was ascending
+    if order == Order::Ascending {
+        fetch_result.items.reverse();
+    }
 
     render_ingress_logs_html(&fetch_result, params.get("limit"), order)
 }
@@ -119,7 +119,7 @@ pub async fn list(
 fn render_ingress_logs_html(
     fetch_result: &FetchResult<IngressLog>,
     limit_param: Option<&String>,
-    order: Order,
+    original_order: Order,
 ) -> Result<impl IntoResponse, AppError> {
     let limit = limit_param
         .and_then(|l| l.parse::<usize>().ok())
@@ -130,12 +130,17 @@ fn render_ingress_logs_html(
 <html>
 <head>
     <style>
-        body {
+        body, html {
+            height: 100%;
+            margin: 0;
             font-family: Arial, sans-serif;
         }
         .container {
-            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
             padding: 20px;
+            box-sizing: border-box;
         }
         .navigation {
             margin-bottom: 20px;
@@ -144,22 +149,27 @@ fn render_ingress_logs_html(
             margin-right: 10px;
         }
         .table-container {
-            max-height: 600px;
-            overflow-y: auto;
+            flex: 1;
+            overflow: auto;
         }
         table {
             width: 100%;
-            border-collapse: collapse;
+            border-collapse: separate;
+            border-spacing: 0;
         }
         th, td {
             border: 1px solid #ddd;
             padding: 8px;
             text-align: left;
         }
-        th {
-            background-color: #f2f2f2;
+        thead {
             position: sticky;
             top: 0;
+            background-color: #f2f2f2;
+            z-index: 1;
+        }
+        th {
+            background-color: #f2f2f2;
         }
         pre {
             white-space: pre-wrap;
@@ -173,21 +183,26 @@ fn render_ingress_logs_html(
     <div class="navigation">"#,
     );
 
-    if fetch_result.more_records_before {
-        let first_key = URL_SAFE.encode(&fetch_result.items.first().unwrap().0);
+    if fetch_result.more_records {
+        let (cursor, param_name) = if original_order == Order::Ascending {
+            (fetch_result.items.first().unwrap().0.clone(), "preceding")
+        } else {
+            (fetch_result.items.last().unwrap().0.clone(), "following")
+        };
+        let encoded_cursor = URL_SAFE.encode(cursor);
+
         html.push_str(&format!(
-            r#"<a href="?cursor={}&order={:?}&limit={}">Previous page</a>"#,
-            first_key,
-            order.reverse(),
-            limit
+            r#"<a href="?{}={}&limit={}">Next page</a>"#,
+            param_name, encoded_cursor, limit
         ));
     }
 
-    if fetch_result.more_records_after {
-        let last_key = URL_SAFE.encode(&fetch_result.items.last().unwrap().0);
+    if !fetch_result.items.is_empty() {
+        let first_cursor = fetch_result.items.first().unwrap().0.clone();
+        let encoded_first_cursor = URL_SAFE.encode(first_cursor);
         html.push_str(&format!(
-            r#"<a href="?cursor={}&order={:?}&limit={}">Next page</a>"#,
-            last_key, order, limit
+            r#" <a href="?preceding={}&limit={}">Previous page</a>"#,
+            encoded_first_cursor, limit
         ));
     }
 
@@ -195,6 +210,7 @@ fn render_ingress_logs_html(
         r#"</div>
     <div class="table-container">
     <table>
+    <thead>
     <tr>
         <th>Event ID</th>
         <th>Date</th>
@@ -205,7 +221,9 @@ fn render_ingress_logs_html(
         <th>Query</th>
         <th>Headers</th>
         <th>Body</th>
-    </tr>"#,
+    </tr>
+    </thead>
+    <tbody>"#,
     );
 
     for (key, log) in &fetch_result.items {
@@ -236,7 +254,7 @@ fn render_ingress_logs_html(
         ));
     }
 
-    html.push_str("</table></div></div></body></html>");
+    html.push_str("</tbody></table></div></div></body></html>");
 
     Ok(axum::response::Html(html))
 }

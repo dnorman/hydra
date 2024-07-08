@@ -4,6 +4,7 @@ use ulid::Ulid;
 
 use crate::error::AppError;
 
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum Order {
     Ascending,
     Descending,
@@ -11,6 +12,14 @@ pub enum Order {
 pub trait Key {
     type Bytes: AsRef<[u8]>;
     fn as_bytes(&self) -> Self::Bytes;
+}
+
+impl Key for Vec<u8> {
+    type Bytes = Self;
+    fn as_bytes(&self) -> Self::Bytes {
+        // hack
+        self.to_vec()
+    }
 }
 
 impl Key for Ulid {
