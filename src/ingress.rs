@@ -14,7 +14,7 @@ use ulid::Ulid;
 
 use crate::{
     error::AppError,
-    fetch::{fetch, FetchQuery, FetchResult, Record},
+    fetch::{fetch, FetchQuery, FetchResult, Order, Record},
     AppState,
 };
 
@@ -97,13 +97,15 @@ pub async fn list(
 
     let mut query = FetchQuery::new();
 
-    if let Some(earlier_than) = params.get("earlier_than") {
-        query = query.earlier_than(decode_ulid(earlier_than)?);
+    if let Some(cursor) = params.get("cursor") {
+        query = query.cursor(decode_ulid(cursor)?);
     }
 
-    if let Some(later_than) = params.get("later_than") {
-        query = query.later_than(decode_ulid(later_than)?);
-    }
+    let order = params
+        .get("order")
+        .and_then(|o| o.parse().ok())
+        .unwrap_or(Order::Descending);
+    query = query.order(order);
 
     if let Some(limit) = params.get("limit").and_then(|s| s.parse().ok()) {
         query = query.limit(limit);
@@ -111,12 +113,13 @@ pub async fn list(
 
     let fetch_result = fetch::<IngressLog, _>(&tree, query)?;
 
-    render_ingress_logs_html(&fetch_result, params.get("limit"))
+    render_ingress_logs_html(&fetch_result, params.get("limit"), order)
 }
 
 fn render_ingress_logs_html(
     fetch_result: &FetchResult<IngressLog>,
     limit_param: Option<&String>,
+    order: Order,
 ) -> Result<impl IntoResponse, AppError> {
     let limit = limit_param
         .and_then(|l| l.parse::<usize>().ok())
@@ -170,19 +173,21 @@ fn render_ingress_logs_html(
     <div class="navigation">"#,
     );
 
-    if fetch_result.earlier_records_present {
+    if fetch_result.more_records_before {
         let first_key = URL_SAFE.encode(&fetch_result.items.first().unwrap().0);
         html.push_str(&format!(
-            r#"<a href="?earlier_than={}&limit={}">Earlier events</a>"#,
-            first_key, limit
+            r#"<a href="?cursor={}&order={:?}&limit={}">Previous page</a>"#,
+            first_key,
+            order.reverse(),
+            limit
         ));
     }
 
-    if fetch_result.later_records_present {
+    if fetch_result.more_records_after {
         let last_key = URL_SAFE.encode(&fetch_result.items.last().unwrap().0);
         html.push_str(&format!(
-            r#"<a href="?later_than={}&limit={}">Later events</a>"#,
-            last_key, limit
+            r#"<a href="?cursor={}&order={:?}&limit={}">Next page</a>"#,
+            last_key, order, limit
         ));
     }
 
