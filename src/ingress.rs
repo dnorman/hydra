@@ -90,9 +90,9 @@ pub async fn list(
     let mut query = FetchQuery::new();
 
     let (cursor, order) = if let Some(following) = params.get("following") {
-        (Some(following.as_bytes().to_vec()), Order::Ascending)
+        (Some(following.as_bytes().to_vec()), Order::Descending)
     } else if let Some(preceding) = params.get("preceding") {
-        (Some(preceding.as_bytes().to_vec()), Order::Descending)
+        (Some(preceding.as_bytes().to_vec()), Order::Ascending)
     } else {
         (None, Order::Descending)
     };
@@ -185,24 +185,24 @@ fn render_ingress_logs_html(
 
     if fetch_result.more_records {
         let (cursor, param_name) = if original_order == Order::Ascending {
-            (fetch_result.items.first().unwrap().0.clone(), "preceding")
-        } else {
             (fetch_result.items.last().unwrap().0.clone(), "following")
+        } else {
+            (fetch_result.items.first().unwrap().0.clone(), "preceding")
         };
         let encoded_cursor = URL_SAFE.encode(cursor);
 
         html.push_str(&format!(
-            r#"<a href="?{}={}&limit={}">Next page</a>"#,
+            r#"<a href="?{}={}&limit={}">Previous page</a>"#,
             param_name, encoded_cursor, limit
         ));
     }
 
     if !fetch_result.items.is_empty() {
-        let first_cursor = fetch_result.items.first().unwrap().0.clone();
-        let encoded_first_cursor = URL_SAFE.encode(first_cursor);
+        let last_cursor = fetch_result.items.last().unwrap().0.clone();
+        let encoded_last_cursor = URL_SAFE.encode(last_cursor);
         html.push_str(&format!(
-            r#" <a href="?preceding={}&limit={}">Previous page</a>"#,
-            encoded_first_cursor, limit
+            r#" <a href="?following={}&limit={}">Next page</a>"#,
+            encoded_last_cursor, limit
         ));
     }
 
