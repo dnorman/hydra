@@ -18,7 +18,7 @@ use crate::{
     AppState,
 };
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct IngressLog {
     event_id: Ulid,
     date: chrono::DateTime<chrono::Utc>,
@@ -81,6 +81,13 @@ pub async fn capture(
 
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 
+#[derive(PartialEq, Eq)]
+enum Mode {
+    Preceding,
+    Following,
+    Default,
+}
+
 pub async fn list(
     state: State<AppState>,
     Query(params): Query<HashMap<String, String>>,
@@ -89,12 +96,20 @@ pub async fn list(
 
     let mut query = FetchQuery::new();
 
-    let (cursor, order) = if let Some(following) = params.get("following") {
-        (Some(following.as_bytes().to_vec()), Order::Descending)
+    let (cursor, order, mode) = if let Some(following) = params.get("following") {
+        (
+            Some(URL_SAFE.decode(following)?),
+            Order::Descending,
+            Mode::Following,
+        )
     } else if let Some(preceding) = params.get("preceding") {
-        (Some(preceding.as_bytes().to_vec()), Order::Ascending)
+        (
+            Some(URL_SAFE.decode(preceding)?),
+            Order::Ascending,
+            Mode::Preceding,
+        )
     } else {
-        (None, Order::Descending)
+        (None, Order::Descending, Mode::Default)
     };
 
     if let Some(cursor) = cursor {
@@ -106,24 +121,25 @@ pub async fn list(
         query = query.limit(limit);
     }
 
-    let mut fetch_result = fetch::<IngressLog, _>(&tree, query)?;
+    let fetch_result = fetch::<IngressLog, _>(&tree, query)?;
 
-    // Reverse the items if the order was ascending
-    if order == Order::Ascending {
-        fetch_result.items.reverse();
-    }
-
-    render_ingress_logs_html(&fetch_result, params.get("limit"), order)
+    render_ingress_logs_html(&fetch_result, params.get("limit"), Order::Descending, mode)
 }
 
 fn render_ingress_logs_html(
     fetch_result: &FetchResult<IngressLog>,
     limit_param: Option<&String>,
-    original_order: Order,
+    display_order: Order,
+    mode: Mode,
 ) -> Result<impl IntoResponse, AppError> {
     let limit = limit_param
         .and_then(|l| l.parse::<usize>().ok())
         .unwrap_or(10);
+
+    let mut items = fetch_result.items.clone();
+    if fetch_result.order != display_order {
+        items.reverse();
+    }
 
     let mut html = String::from(
         r#"<!DOCTYPE html>
@@ -183,27 +199,55 @@ fn render_ingress_logs_html(
     <div class="navigation">"#,
     );
 
-    if fetch_result.more_records {
-        let (cursor, param_name) = if original_order == Order::Ascending {
-            (fetch_result.items.last().unwrap().0.clone(), "following")
+    if items.is_empty() {
+        // todo use the present cursor but reverse the direction and present the previous/next page link
+        // in theory this shouldn't happen often, but could be possible if the item is deleted
+    } else {
+        // compare the first and last key to get the least and greatest key
+        let first_key = &items.first().unwrap().0;
+        let last_key = &items.last().unwrap().0;
+        let least_key = URL_SAFE.encode(first_key.min(last_key));
+        let greatest_key = URL_SAFE.encode(first_key.max(last_key));
+
+        // an instruction to show items preceeding a given cursor
+        // necessitates at least one greater key (the cursor).
+        let mut has_following = mode == Mode::Preceding;
+
+        // an instruction to show items following a given cursor
+        // necessitates at least one lesser key (the cursor).
+        let mut has_preceding = mode == Mode::Following;
+
+        if fetch_result.more_records {
+            if fetch_result.order == Order::Ascending {
+                has_following = true;
+            } else {
+                has_preceding = true;
+            }
+        }
+        // not quite right, but this is close
+        if fetch_result.order == display_order {
+            if has_preceding {
+                html.push_str(&format!(
+                    r#"<a href="?preceding={least_key}&limit={limit}">Previous page</a>"#
+                ));
+            }
+            if has_following {
+                html.push_str(&format!(
+                    r#"<a href="?following={greatest_key}&limit={limit}">Next page</a>"#
+                ));
+            }
         } else {
-            (fetch_result.items.first().unwrap().0.clone(), "preceding")
-        };
-        let encoded_cursor = URL_SAFE.encode(cursor);
-
-        html.push_str(&format!(
-            r#"<a href="?{}={}&limit={}">Previous page</a>"#,
-            param_name, encoded_cursor, limit
-        ));
-    }
-
-    if !fetch_result.items.is_empty() {
-        let last_cursor = fetch_result.items.last().unwrap().0.clone();
-        let encoded_last_cursor = URL_SAFE.encode(last_cursor);
-        html.push_str(&format!(
-            r#" <a href="?following={}&limit={}">Next page</a>"#,
-            encoded_last_cursor, limit
-        ));
+            if has_following {
+                html.push_str(&format!(
+                    r#"<a href="?following={greatest_key}&limit={limit}">Previous page</a>"#
+                ));
+            }
+            if has_preceding {
+                html.push_str(&format!(
+                    r#"<a href="?preceding={least_key}&limit={limit}">Next page</a>"#
+                ));
+            }
+        }
     }
 
     html.push_str(
@@ -226,7 +270,7 @@ fn render_ingress_logs_html(
     <tbody>"#,
     );
 
-    for (key, log) in &fetch_result.items {
+    for (key, log) in &items {
         let encoded_key = URL_SAFE.encode(key);
         let body_utf8 = String::from_utf8_lossy(&log.body);
         html.push_str(&format!(

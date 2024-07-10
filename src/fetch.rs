@@ -74,6 +74,7 @@ pub trait Record: serde::de::DeserializeOwned {
 
 pub struct FetchResult<T: Record> {
     pub items: Vec<(IVec, T)>,
+    pub order: Order,
     pub more_records: bool,
 }
 
@@ -125,6 +126,7 @@ pub fn fetch<T: Record, K: Key>(
     Ok(FetchResult {
         items,
         more_records,
+        order: query.order,
     })
 }
 
