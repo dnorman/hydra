@@ -9,6 +9,15 @@ pub enum Order {
     Ascending,
     Descending,
 }
+impl Order {
+    pub fn inverse(&self) -> Self {
+        match self {
+            Order::Ascending => Order::Descending,
+            Order::Descending => Order::Ascending,
+        }
+    }
+}
+
 pub trait Key {
     type Bytes: AsRef<[u8]>;
     fn as_bytes(&self) -> Self::Bytes;

@@ -81,13 +81,6 @@ pub async fn capture(
 
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 
-#[derive(PartialEq, Eq)]
-enum Mode {
-    Preceding,
-    Following,
-    Default,
-}
-
 pub async fn list(
     state: State<AppState>,
     Query(params): Query<HashMap<String, String>>,
@@ -96,26 +89,33 @@ pub async fn list(
 
     let mut query = FetchQuery::new();
 
-    let (cursor, order, mode) = if let Some(following) = params.get("following") {
-        (
-            Some(URL_SAFE.decode(following)?),
-            Order::Descending,
-            Mode::Following,
-        )
-    } else if let Some(preceding) = params.get("preceding") {
-        (
-            Some(URL_SAFE.decode(preceding)?),
-            Order::Ascending,
-            Mode::Preceding,
-        )
+    let display_order = match params.get("order") {
+        Some(order) if order == "asc" || order == "ascending" => Order::Ascending,
+        _ => Order::Descending,
+    };
+
+    let mut has_more_before = false;
+    let mut has_more_after = false;
+
+    //get the page before or after the given key
+    let (cursor, query_order) = if let Some(before) = params.get("before") {
+        has_more_after = true;
+        (Some(URL_SAFE.decode(before)?), display_order.inverse())
+        // display order ascending 5,6 -> before 5 -> descending 4,3
+        // display order descending 6,5 -> before 6 -> ascending 7,8
+    } else if let Some(after) = params.get("after") {
+        has_more_before = true;
+        (Some(URL_SAFE.decode(after)?), display_order)
+        // display order ascending 5,6 -> after 6 -> ascending 7,8
+        // display order descending 6,5 -> after 5 -> descending 4,3
     } else {
-        (None, Order::Descending, Mode::Default)
+        (None, display_order)
     };
 
     if let Some(cursor) = cursor {
         query = query.cursor(cursor);
     }
-    query = query.order(order);
+    query = query.order(query_order);
 
     if let Some(limit) = params.get("limit").and_then(|s| s.parse().ok()) {
         query = query.limit(limit);
@@ -123,23 +123,29 @@ pub async fn list(
 
     let fetch_result = fetch::<IngressLog, _>(&tree, query)?;
 
-    render_ingress_logs_html(&fetch_result, params.get("limit"), Order::Descending, mode)
+    if query_order == display_order {
+        has_more_after = fetch_result.more_records;
+    } else {
+        has_more_before = fetch_result.more_records;
+    }
+
+    let mut items = fetch_result.items;
+    if display_order != query_order {
+        items.reverse();
+    }
+
+    render_ingress_logs_html(items, params.get("limit"), has_more_before, has_more_after)
 }
 
 fn render_ingress_logs_html(
-    fetch_result: &FetchResult<IngressLog>,
+    items: Vec<(IVec, IngressLog)>,
     limit_param: Option<&String>,
-    display_order: Order,
-    mode: Mode,
+    has_more_before: bool,
+    has_more_after: bool,
 ) -> Result<impl IntoResponse, AppError> {
     let limit = limit_param
         .and_then(|l| l.parse::<usize>().ok())
         .unwrap_or(10);
-
-    let mut items = fetch_result.items.clone();
-    if fetch_result.order != display_order {
-        items.reverse();
-    }
 
     let mut html = String::from(
         r#"<!DOCTYPE html>
@@ -204,49 +210,18 @@ fn render_ingress_logs_html(
         // in theory this shouldn't happen often, but could be possible if the item is deleted
     } else {
         // compare the first and last key to get the least and greatest key
-        let first_key = &items.first().unwrap().0;
-        let last_key = &items.last().unwrap().0;
-        let least_key = URL_SAFE.encode(first_key.min(last_key));
-        let greatest_key = URL_SAFE.encode(first_key.max(last_key));
+        let first_key = URL_SAFE.encode(&items.first().unwrap().0);
+        let last_key = URL_SAFE.encode(&items.last().unwrap().0);
 
-        // an instruction to show items preceeding a given cursor
-        // necessitates at least one greater key (the cursor).
-        let mut has_following = mode == Mode::Preceding;
-
-        // an instruction to show items following a given cursor
-        // necessitates at least one lesser key (the cursor).
-        let mut has_preceding = mode == Mode::Following;
-
-        if fetch_result.more_records {
-            if fetch_result.order == Order::Ascending {
-                has_following = true;
-            } else {
-                has_preceding = true;
-            }
+        if has_more_before {
+            html.push_str(&format!(
+                r#"<a href="?before={first_key}&limit={limit}">Previous page</a>"#
+            ));
         }
-        // not quite right, but this is close
-        if fetch_result.order == display_order {
-            if has_preceding {
-                html.push_str(&format!(
-                    r#"<a href="?preceding={least_key}&limit={limit}">Previous page</a>"#
-                ));
-            }
-            if has_following {
-                html.push_str(&format!(
-                    r#"<a href="?following={greatest_key}&limit={limit}">Next page</a>"#
-                ));
-            }
-        } else {
-            if has_following {
-                html.push_str(&format!(
-                    r#"<a href="?following={greatest_key}&limit={limit}">Previous page</a>"#
-                ));
-            }
-            if has_preceding {
-                html.push_str(&format!(
-                    r#"<a href="?preceding={least_key}&limit={limit}">Next page</a>"#
-                ));
-            }
+        if has_more_after {
+            html.push_str(&format!(
+                r#"<a href="?after={last_key}&limit={limit}">Next page</a>"#
+            ));
         }
     }
 
