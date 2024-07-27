@@ -97,6 +97,8 @@ pub async fn list(
     let mut has_more_before = false;
     let mut has_more_after = false;
 
+    // TODO impl starting_with parameter so we can switch the display_order without having to know the preceeding/anteceding keys
+
     //get the page before or after the given key
     let (cursor, query_order) = if let Some(before) = params.get("before") {
         has_more_after = true;
