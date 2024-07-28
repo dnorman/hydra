@@ -1,19 +1,21 @@
-import {  useState } from 'react'
+import { useState } from 'react'
 import reactLogo from './assets/react.svg'
 import viteLogo from '/vite.svg'
 import './App.css'
-
-import init_hydra, * as hydra from 'hydra-web';
-
-init_hydra().then(async () => {
-  console.log('init done')
-  const client = hydra.Client.new();
-  await client.ready();
-  client.send_message('wooooo');
-})
+import { useAppState } from './AppState'
 
 function App() {
   const [count, setCount] = useState(0)
+  const appState = useAppState()
+
+  const handleSendMessage = () => {
+    if (appState?.client) {
+      appState.client.send_message('Hello from App!');
+      console.log('Message sent');
+    } else {
+      console.log('Client not ready');
+    }
+  }
 
   return (
     <>
@@ -29,6 +31,9 @@ function App() {
       <div className="card">
         <button onClick={() => setCount((count) => count + 1)}>
           count is {count}
+        </button>
+        <button onClick={handleSendMessage} disabled={!appState?.client}>
+          Send Message
         </button>
         <p>
           Edit <code>src/App.tsx</code> and save to test HMR
