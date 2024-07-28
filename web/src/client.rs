@@ -13,6 +13,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{CloseEvent, Event, MessageEvent, WebSocket};
 
+const MAX_RECONNECT_DELAY: u64 = 10000;
+
 #[wasm_bindgen(start)]
 pub async fn start() -> Result<(), JsValue> {
     wasm_logger::init(wasm_logger::Config::default());
@@ -46,7 +48,7 @@ impl Client {
             state: Mutable::new(ConnectionState::None),
         });
 
-        inner.connect()?;
+        inner.connect(0)?;
 
         Ok(Client { inner })
     }
@@ -69,7 +71,7 @@ impl Client {
 }
 
 impl ClientInner {
-    pub fn connect(self: &Rc<Self>) -> Result<(), JsValue> {
+    pub fn connect(self: &Rc<Self>, mut delay: u64) -> Result<(), JsValue> {
         let connection = Connection::new()?;
         let state = connection.state.clone();
         self.connection.borrow_mut().replace(connection);
@@ -78,32 +80,55 @@ impl ClientInner {
         let client_inner = Rc::clone(&self);
 
         info!("Connecting to websocket");
+        let self2 = self.clone();
         spawn_local(async move {
-            select! {
-                _ = sleep(Duration::from_secs(30)).fuse() => {
-                    if state.get() != ConnectionState::Open {
-                        warn!("connect: Connection timed out");
-                        client_inner.connect().expect("Failed to reconnect");
+            state
+                .signal()
+                .for_each(|state| {
+                    info!("connect: state changed to {:?}", state);
+                    client_inner.state.set(state);
+                    // if state isn't open or connecting, reconnect
+                    match state {
+                        ConnectionState::Open => {
+                            delay = 0;
+                        }
+                        ConnectionState::Connecting => (),
+                        _ => self2.reconnect(delay + 500),
                     }
-                }
-                _ = state.signal().wait_for(ConnectionState::Open).fuse() => {
-                    info!("connect: Connection opened");
-                    state.signal().for_each(|state| {
-                        info!("connect: state changed to {:?}", state);
-                            client_inner.state.set(state);
-                            // if state isn't open or connecting, reconnect
-                            if state != ConnectionState::Open && state != ConnectionState::Connecting {
-                                client_inner.connect().expect("Failed to reconnect");
-                            }
-                            futures::future::ready(())
-                    }).await;
-
-                    info!("for_each future complete");
-                }
-            };
+                    futures::future::ready(())
+                })
+                .await;
+            info!("connect: for_each future complete");
         });
 
+        // This isn't quite right, because we're not checking the latest connection
+        // we're closing over the connection state from this run
+        // and also we're not coordinating with the reconnect logic, so we've got
+        // dueling reconnects
+        // let state2 = state.clone();
+        // let self3 = self.clone();
+        // spawn_local(async move {
+        //     sleep(Duration::from_secs(30)).await;
+        //     if state2.get() != ConnectionState::Open {
+        //         warn!("connect: Connection timed out");
+        //         self3.reconnect(delay);
+        //     }
+        // });
+
         Ok(())
+    }
+    pub fn reconnect(self: &Rc<Self>, mut delay: u64) {
+        delay = delay.min(MAX_RECONNECT_DELAY);
+        info!("reconnect: removing old connection");
+        self.connection.borrow_mut().take();
+
+        let self2 = self.clone();
+        spawn_local(async move {
+            info!("reconnect: sleeping for {}ms", delay);
+            sleep(Duration::from_millis(delay)).await;
+            info!("reconnect: reconnecting");
+            self2.connect(delay).expect("Failed to reconnect");
+        });
     }
 }
 
