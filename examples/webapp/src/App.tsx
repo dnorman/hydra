@@ -7,6 +7,7 @@ import { useAppState } from './AppState'
 function App() {
   const [count, setCount] = useState(0)
   const appState = useAppState()
+  console.log('appState', appState);
 
   const handleSendMessage = () => {
     if (appState?.client) {

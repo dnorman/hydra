@@ -8,15 +8,23 @@ interface AppState {
 const AppState = createContext<AppState | null>(null);
 
 export const useAppState = () => useContext(AppState);
+let initializing = false;
 
 export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [appState, setAppState] = useState<AppState | null>(null);
 
   useMemo(() => { // use useMemo to ensure that the client is only initialized once
+    // React functional components are just classes with more steps. Change my mind
+    // if (initializing) {
+    //   return;
+    // }
+    // initializing = true;
     init_hydra().then(async () => {
       console.log('init done');
       const newClient = hydra.Client.new();
+      console.log('newClient', newClient);
       await newClient.ready();
+      console.log('newClient ready');
       setAppState({ client: newClient });
     });
   }, []);

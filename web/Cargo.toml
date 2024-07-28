@@ -20,6 +20,7 @@ wasm-bindgen-futures = "0.4.42"
 wasm-logger = "0.2.0"
 web-sys = { version = "0.3.69", features = ["WebSocket", "Event", "ErrorEvent", "CloseEvent", "MessageEvent"] }
 futures-signals = "0.3.34"
+gloo-timers = { version = "0.3.0", features = ["futures"] }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3.34"
