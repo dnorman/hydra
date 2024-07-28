@@ -1,20 +1,19 @@
-import { useEffect, useState } from 'react'
+import {  useState } from 'react'
 import reactLogo from './assets/react.svg'
 import viteLogo from '/vite.svg'
 import './App.css'
 
-import init, { greet } from 'hydra-web';
+import init_hydra, * as hydra from 'hydra-web';
+
+init_hydra().then(async () => {
+  console.log('init done')
+  const client = hydra.Client.new();
+  await client.ready();
+  client.send_message('wooooo');
+})
 
 function App() {
   const [count, setCount] = useState(0)
-
-  useEffect(() => {
-    console.log('init 1')
-    init().then(() => {
-      console.log('init done')
-      greet()
-    })
-  }, [])
 
   return (
     <>

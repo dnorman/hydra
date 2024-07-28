@@ -8,6 +8,7 @@ mod storage;
 
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::ws::CloseFrame;
+use core::panic;
 use std::{borrow::Cow, net::SocketAddr, ops::ControlFlow};
 
 use appstate::AppState;
@@ -23,25 +24,45 @@ use axum::{
 
 use axum_extra::{headers, TypedHeader};
 use futures_util::{SinkExt, StreamExt};
+use tower::ServiceBuilder;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
+use tracing::{info, Level};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // initialize tracing
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
     let state = AppState::new()?;
 
-    // build our application with a route
+    // build our application with a route and middleware
     let app = Router::new()
         .route("/", get(root))
         .route("/ingress", post(ingress::capture))
         .route("/ingress", get(ingress::list))
         .route("/ws", get(ws_handler))
-        .with_state(state);
+        .with_state(state)
+        .layer(
+            ServiceBuilder::new()
+                .layer(
+                    TraceLayer::new_for_http()
+                        .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                        .on_request(DefaultOnRequest::new().level(Level::INFO))
+                        .on_response(DefaultOnResponse::new().level(Level::INFO)),
+                )
+                .into_inner(),
+        );
 
     // run our app with hyper, listening globally on port 3000
-    eprintln!("Server running on http://0.0.0.0:9797");
     let listener = tokio::net::TcpListener::bind("0.0.0.0:9797").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    tracing::debug!("listening on {}", listener.local_addr().unwrap());
+
+    // axum::serve(listener, app).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 
     Ok(())
 }
@@ -55,6 +76,7 @@ async fn ws_handler(
     user_agent: Option<TypedHeader<headers::UserAgent>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
+    info!("Upgrading connection");
     let user_agent = if let Some(TypedHeader(user_agent)) = user_agent {
         user_agent.to_string()
     } else {
@@ -68,6 +90,7 @@ async fn ws_handler(
 
 /// Actual websocket statemachine (one will be spawned per connection)
 async fn handle_socket(mut socket: WebSocket, who: SocketAddr) {
+    println!("Connected to {}", who);
     // send a ping (unsupported by some browsers) just to kick things off and get a response
     if socket.send(Message::Ping(vec![1, 2, 3])).await.is_ok() {
         println!("Pinged {who}...");

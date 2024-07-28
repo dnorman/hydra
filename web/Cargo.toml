@@ -19,10 +19,14 @@ log = "0.4.22"
 wasm-bindgen-futures = "0.4.42"
 wasm-logger = "0.2.0"
 web-sys = { version = "0.3.69", features = ["WebSocket", "Event", "ErrorEvent", "CloseEvent", "MessageEvent"] }
+futures-signals = "0.3.34"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3.34"
 
 [profile.release]
 # Tell `rustc` to optimize for small code size.
-opt-level = "s"
+#opt-level = "s"
+
+[package.metadata.wasm-pack.profile.dev.wasm-bindgen]
+dwarf-debug-info = true
