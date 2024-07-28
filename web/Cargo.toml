@@ -2,7 +2,7 @@
 name = "hydra-web"
 version = "0.1.0"
 authors = ["Daniel Norman <daniel@danielnorman.net>"]
-edition = "2018"
+edition = "2021"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
