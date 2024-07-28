@@ -61,12 +61,11 @@ impl Client {
     }
     pub fn send_message(&self, message: &str) {
         info!("send_message: Sending message: {}", message);
-        self.inner
-            .connection
-            .borrow_mut()
-            .as_ref()
-            .unwrap()
-            .send_message(message);
+
+        if let Some(connection) = self.inner.connection.borrow_mut().as_ref() {
+            // TODO: queue these messages?
+            connection.send_message(message);
+        }
     }
 }
 
