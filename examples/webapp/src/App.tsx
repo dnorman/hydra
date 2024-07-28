@@ -1,10 +1,20 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import reactLogo from './assets/react.svg'
 import viteLogo from '/vite.svg'
 import './App.css'
 
+import init, { greet } from 'hydra-web';
+
 function App() {
   const [count, setCount] = useState(0)
+
+  useEffect(() => {
+    console.log('init 1')
+    init().then(() => {
+      console.log('init done')
+      greet()
+    })
+  }, [])
 
   return (
     <>

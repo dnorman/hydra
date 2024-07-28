@@ -1,1 +1,3 @@
-workspace = { members = [ "server","web"] }
+[workspace]
+members = ["server", "web"]
+resolver = "2"
