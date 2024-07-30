@@ -1,14 +1,15 @@
 mod appstate;
 mod error;
-mod fetch;
-mod ingress;
-mod model;
+mod handler;
+mod query;
 mod signal;
 mod storage;
 
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::ws::CloseFrame;
 use core::panic;
+use error::AppError;
+use handler::ingress::fetch_ingress_logs;
 use std::{borrow::Cow, net::SocketAddr, ops::ControlFlow};
 
 use appstate::AppState;
@@ -23,7 +24,9 @@ use axum::{
 };
 
 use axum_extra::{headers, TypedHeader};
+use bincode::{deserialize, serialize};
 use futures_util::{SinkExt, StreamExt};
+use hydra_proto::message::{Message, Request, RequestPayload, Response, ResponsePayload};
 use tower::ServiceBuilder;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
 use tracing::{info, Level};
@@ -37,8 +40,7 @@ async fn main() -> Result<()> {
     // build our application with a route and middleware
     let app = Router::new()
         .route("/", get(root))
-        .route("/ingress", post(ingress::capture))
-        .route("/ingress", get(ingress::list))
+        .route("/ingress", post(handler::ingress::capture))
         .route("/ws", get(ws_handler))
         .with_state(state)
         .layer(
@@ -75,6 +77,7 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     user_agent: Option<TypedHeader<headers::UserAgent>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<AppState>,
 ) -> impl IntoResponse {
     info!("Upgrading connection");
     let user_agent = if let Some(TypedHeader(user_agent)) = user_agent {
@@ -85,11 +88,11 @@ async fn ws_handler(
     println!("`{user_agent}` at {addr} connected.");
     // finalize the upgrade process by returning upgrade callback.
     // we can customize the callback by sending additional info such as address.
-    ws.on_upgrade(move |socket| handle_socket(socket, addr))
+    ws.on_upgrade(move |socket| handle_socket(socket, addr, state))
 }
 
 /// Actual websocket statemachine (one will be spawned per connection)
-async fn handle_socket(mut socket: WebSocket, who: SocketAddr) {
+async fn handle_socket(mut socket: WebSocket, who: SocketAddr, state: AppState) {
     println!("Connected to {}", who);
     // send a ping (unsupported by some browsers) just to kick things off and get a response
     if socket.send(Message::Ping(vec![1, 2, 3])).await.is_ok() {
@@ -107,7 +110,7 @@ async fn handle_socket(mut socket: WebSocket, who: SocketAddr) {
     // connections.
     if let Some(msg) = socket.recv().await {
         if let Ok(msg) = msg {
-            if process_message(msg, who).is_break() {
+            if process_message(msg, who, &socket, &state).is_break() {
                 return;
             }
         } else {
@@ -171,7 +174,7 @@ async fn handle_socket(mut socket: WebSocket, who: SocketAddr) {
         while let Some(Ok(msg)) = receiver.next().await {
             cnt += 1;
             // print message and break if instructed to do so
-            if process_message(msg, who).is_break() {
+            if process_message(msg, who, &socket, &state).is_break() {
                 break;
             }
         }
@@ -201,13 +204,32 @@ async fn handle_socket(mut socket: WebSocket, who: SocketAddr) {
 }
 
 /// helper to print contents of messages to stdout. Has special treatment for Close.
-fn process_message(msg: Message, who: SocketAddr) -> ControlFlow<(), ()> {
+fn process_message(
+    msg: Message,
+    who: SocketAddr,
+    socket: &WebSocket,
+    state: &AppState,
+) -> ControlFlow<(), ()> {
     match msg {
         Message::Text(t) => {
             println!(">>> {who} sent str: {t:?}");
         }
         Message::Binary(d) => {
             println!(">>> {} sent {} bytes: {:?}", who, d.len(), d);
+
+            // Deserialize the binary message into a Message enum
+            if let Ok(message) = deserialize::<hydra_proto::message::Message>(&d) {
+                match message {
+                    hydra_proto::message::Message::Request(request) => {
+                        handle_request(request, socket, state);
+                    }
+                    hydra_proto::message::Message::Response(_) => {
+                        println!("Unexpected response message from client");
+                    }
+                }
+            } else {
+                println!("Failed to deserialize message");
+            }
         }
         Message::Close(c) => {
             if let Some(cf) = c {
@@ -232,4 +254,101 @@ fn process_message(msg: Message, who: SocketAddr) -> ControlFlow<(), ()> {
         }
     }
     ControlFlow::Continue(())
+}
+
+async fn handle_request(request: Request, socket: &WebSocket, state: &AppState) -> Response {
+    let response_payload = match request.payload {
+        RequestPayload::FetchIngressLogs(fetch_request) => {
+            match fetch_ingress_logs(fetch_request, state, socket) {
+                Ok(fetch_response) => ResponsePayload::FetchIngressLogs(fetch_response),
+                Err(e) => {
+                    println!("Error fetching ingress logs: {}", e);
+                    // You might want to define an error variant for ResponsePayload
+                    // to handle this case more gracefully
+                    return Response {
+                        request_id: request.id,
+                        payload: ResponsePayload::Error(format!("{:?}", e)),
+                    };
+                }
+            }
+        }
+    };
+
+    Response {
+        request_id: request.id,
+        payload: response_payload,
+    }
+}
+
+/// helper to print contents of messages to stdout. Has special treatment for Close.
+fn process_message(msg: Message, who: SocketAddr, socket: &WebSocket) -> ControlFlow<(), ()> {
+    match msg {
+        Message::Text(t) => {
+            println!(">>> {who} sent str: {t:?}");
+        }
+        Message::Binary(d) => {
+            println!(">>> {} sent {} bytes: {:?}", who, d.len(), d);
+
+            // Deserialize the binary message into a Message enum
+            if let Ok(message) = deserialize::<hydra_proto::message::Message>(&d) {
+                match message {
+                    hydra_proto::message::Message::Request(request) => {
+                        handle_request(request, socket, state);
+                    }
+                    hydra_proto::message::Message::Response(_) => {
+                        println!("Unexpected response message from client");
+                    }
+                }
+            } else {
+                println!("Failed to deserialize message");
+            }
+        }
+        Message::Close(c) => {
+            if let Some(cf) = c {
+                println!(
+                    ">>> {} sent close with code {} and reason `{}`",
+                    who, cf.code, cf.reason
+                );
+            } else {
+                println!(">>> {who} somehow sent close message without CloseFrame");
+            }
+            return ControlFlow::Break(());
+        }
+
+        Message::Pong(v) => {
+            println!(">>> {who} sent pong with {v:?}");
+        }
+        // You should never need to manually handle Message::Ping, as axum's websocket library
+        // will do so for you automagically by replying with Pong and copying the v according to
+        // spec. But if you need the contents of the pings you can see them here.
+        Message::Ping(v) => {
+            println!(">>> {who} sent ping with {v:?}");
+        }
+    }
+    ControlFlow::Continue(())
+}
+
+async fn handle_request(request: Request, socket: &WebSocket) -> Response {
+    let state = socket.state();
+    let response_payload = match request.payload {
+        RequestPayload::FetchIngressLogs(fetch_request) => {
+            match fetch_ingress_logs(fetch_request, state, socket) {
+                Ok(fetch_response) => ResponsePayload::FetchIngressLogs(fetch_response),
+                Err(e) => {
+                    println!("Error fetching ingress logs: {}", e);
+                    // You might want to define an error variant for ResponsePayload
+                    // to handle this case more gracefully
+                    return Response {
+                        request_id: request.id,
+                        payload: ResponsePayload::Error(format!("{:?}", e)),
+                    };
+                }
+            }
+        }
+    };
+
+    Response {
+        request_id: request.id,
+        payload: response_payload,
+    }
 }

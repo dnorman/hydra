@@ -1,41 +1,27 @@
 use anyhow::anyhow;
 use axum::{
-    extract::{Host, Path, Query, State},
+    extract::{ws::WebSocket, Host, Path, Query, State},
     http::{HeaderMap, Method},
     response::IntoResponse,
     Json,
 };
 use bytes::Bytes;
+use hydra_proto::{
+    event::ingress::{FetchIngressLogsRequest, FetchIngressLogsResponse, IngressLog},
+    record::Record,
+};
+use serde::{Deserialize, Serialize};
 use sled::IVec;
 use std::{collections::HashMap, net::SocketAddr};
-
-use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::{
     error::AppError,
-    fetch::{fetch, FetchQuery, FetchResult, Order, Record},
+    query::{
+        fetch_paginated, fetch_records, FetchRecordQuery, FetchRecordResult, PaginatedFetchRequest,
+    },
     AppState,
 };
-
-#[derive(Serialize, Deserialize, Clone)]
-struct IngressLog {
-    event_id: Ulid,
-    date: chrono::DateTime<chrono::Utc>,
-    remote_addr: Option<SocketAddr>,
-    method: String,
-    host: String,
-    path: String,
-    query: HashMap<String, String>,
-    headers: HashMap<String, String>,
-    body: Bytes,
-}
-impl Record for IngressLog {
-    type ID = Ulid;
-    fn id(&self) -> &Self::ID {
-        &self.event_id
-    }
-}
 
 #[derive(Serialize, Deserialize)]
 struct IngressResponse {
@@ -79,66 +65,32 @@ pub async fn capture(
     Ok(Json(IngressResponse { event_id }))
 }
 
-use base64::{engine::general_purpose::URL_SAFE, Engine as _};
-
-pub async fn list(
-    state: State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<impl IntoResponse, AppError> {
-    let tree = state.storage.subtree("ingress")?;
-
-    let mut query = FetchQuery::new();
-
-    let display_order = match params.get("order") {
-        Some(order) if order == "asc" || order == "ascending" => Order::Ascending,
-        _ => Order::Descending,
+pub fn fetch_ingress_logs(
+    request: FetchIngressLogsRequest,
+    state: &AppState,
+    socket: &WebSocket,
+) -> Result<FetchIngressLogsResponse, AppError> {
+    let paginated_request = PaginatedFetchRequest {
+        tree: "ingress",
+        before: request.before,
+        after: request.after,
+        limit: request.limit,
+        order: request.order,
     };
-
-    let mut has_more_before = false;
-    let mut has_more_after = false;
-
-    // TODO impl starting_with parameter so we can switch the display_order without having to know the preceeding/anteceding keys
-
-    //get the page before or after the given key
-    let (cursor, query_order) = if let Some(before) = params.get("before") {
-        has_more_after = true;
-        (Some(URL_SAFE.decode(before)?), display_order.inverse())
-        // display order ascending 5,6 -> before 5 -> descending 4,3
-        // display order descending 6,5 -> before 6 -> ascending 7,8
-    } else if let Some(after) = params.get("after") {
-        has_more_before = true;
-        (Some(URL_SAFE.decode(after)?), display_order)
-        // display order ascending 5,6 -> after 6 -> ascending 7,8
-        // display order descending 6,5 -> after 5 -> descending 4,3
-    } else {
-        (None, display_order)
-    };
-
-    if let Some(cursor) = cursor {
-        query = query.cursor(cursor);
-    }
-    query = query.order(query_order);
-
-    if let Some(limit) = params.get("limit").and_then(|s| s.parse().ok()) {
-        query = query.limit(limit);
-    }
-
-    let fetch_result = fetch::<IngressLog, _>(&tree, query)?;
-
-    if query_order == display_order {
-        has_more_after = fetch_result.more_records;
-    } else {
-        has_more_before = fetch_result.more_records;
-    }
-
-    let mut items = fetch_result.items;
-    if display_order != query_order {
-        items.reverse();
-    }
-
-    render_ingress_logs_html(items, params.get("limit"), has_more_before, has_more_after)
+    let paginated_response = fetch_paginated::<IngressLog>(state, paginated_request).await?;
+    Ok(FetchIngressLogsResponse {
+        items: paginated_response
+            .items
+            .into_iter()
+            .map(|(_, log)| log)
+            .collect(),
+        limit: paginated_response.limit,
+        has_more_before: paginated_response.has_more_before,
+        has_more_after: paginated_response.has_more_after,
+    })
 }
 
+// render_ingress_logs_html(items, params.get("limit"), has_more_before, has_more_after)
 fn render_ingress_logs_html(
     items: Vec<(IVec, IngressLog)>,
     limit_param: Option<&String>,
