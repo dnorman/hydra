@@ -1,6 +1,6 @@
 use anyhow::anyhow;
 use axum::extract::State;
-use hydra_proto::record::{Direction, Record};
+use hydra_proto as proto;
 use sled::IVec;
 use ulid::Ulid;
 
@@ -56,17 +56,17 @@ impl<K: Key> FetchCursor<K> {
 }
 
 pub struct FetchRecordQuery<K: Key> {
-    cursor: FetchCursor<K>,
-    limit: Option<usize>,
-    order: Direction,
+    pub cursor: FetchCursor<K>,
+    pub limit: usize,
+    pub order: proto::Direction,
 }
 
 impl<K: Key> FetchRecordQuery<K> {
     pub fn new() -> Self {
         FetchRecordQuery {
             cursor: FetchCursor::None,
-            limit: None,
-            order: Direction::Ascending,
+            limit: 100,
+            order: proto::Direction::Ascending,
         }
     }
 
@@ -76,23 +76,23 @@ impl<K: Key> FetchRecordQuery<K> {
     }
 
     pub fn limit(mut self, value: usize) -> Self {
-        self.limit = Some(value);
+        self.limit = value;
         self
     }
 
-    pub fn order(mut self, order: Direction) -> Self {
+    pub fn direction(mut self, order: proto::Direction) -> Self {
         self.order = order;
         self
     }
 }
 
-pub struct FetchRecordResult<T: Record> {
+pub struct FetchRecordResult<T: proto::Record> {
     pub items: Vec<(IVec, T)>,
-    pub order: Direction,
+    pub order: proto::Direction,
     pub more_records: bool,
 }
 
-impl<T: Record> FetchRecordResult<T> {
+impl<T: proto::Record> FetchRecordResult<T> {
     pub fn ids(&self) -> Vec<T::ID> {
         self.items.iter().map(|(_, r)| r.id().clone()).collect()
     }
@@ -100,24 +100,24 @@ impl<T: Record> FetchRecordResult<T> {
 
 use std::ops::Bound;
 
-pub fn fetch_records<T: Record, K: Key>(
+pub fn fetch_records<T: proto::Record, K: Key>(
     tree: &sled::Tree,
     query: FetchRecordQuery<K>,
 ) -> Result<FetchRecordResult<T>, AppError> {
-    let limit = query.limit.unwrap_or(10);
+    let limit = query.limit;
     let fetch_limit = limit + 1; // Fetch one extra to determine if there are more records
 
     let mut items = Vec::with_capacity(fetch_limit);
 
     match query.order {
-        Direction::Ascending => {
+        proto::Direction::Ascending => {
             let iter = tree.range((query.cursor.into_bound(), Bound::Unbounded));
             for item in iter.take(fetch_limit) {
                 let (key, value) = item?;
                 items.push((key, bincode::deserialize(&value)?));
             }
         }
-        Direction::Descending => {
+        proto::Direction::Descending => {
             let iter = tree
                 .range((Bound::Unbounded, query.cursor.into_bound()))
                 .rev();
@@ -139,17 +139,17 @@ pub fn fetch_records<T: Record, K: Key>(
 }
 
 pub struct PaginatedFetchRequest {
-    tree: &'static str,
-    cursor: PaginatedCursor,
-    limit: usize,
-    direction: Direction,
+    pub tree: &'static str,
+    pub cursor: proto::PaginatedCursor,
+    pub limit: usize,
+    pub direction: proto::Direction,
 }
 
 pub struct PaginatedFetchResponse<T> {
-    items: Vec<FetchResultItem<T>>,
-    limit: usize,
-    has_more_before: bool,
-    has_more_after: bool,
+    pub items: Vec<FetchResultItem<T>>,
+    pub limit: usize,
+    pub has_more_before: bool,
+    pub has_more_after: bool,
 }
 
 pub struct FetchResultItem<T> {
@@ -157,8 +157,8 @@ pub struct FetchResultItem<T> {
     pub item: T,
 }
 
-pub fn fetch_paginated<T: Record>(
-    state: State<AppState>,
+pub fn fetch_paginated<T: proto::Record>(
+    state: &AppState,
     request: PaginatedFetchRequest,
 ) -> Result<PaginatedFetchResponse<T>, AppError> {
     let tree = state.storage.subtree(request.tree)?;
@@ -172,7 +172,7 @@ pub fn fetch_paginated<T: Record>(
 
     //get the page before or after the given key
     let (cursor, query_order) = match request.cursor {
-        PaginatedCursor::Before(ref before) => {
+        proto::PaginatedCursor::Before(ref before) => {
             has_more_after = true;
 
             (
@@ -182,7 +182,7 @@ pub fn fetch_paginated<T: Record>(
             // display order ascending 5,6 -> before 5 -> descending 4,3
             // display order descending 6,5 -> before 6 -> ascending 7,8
         }
-        PaginatedCursor::After(ref after) => {
+        proto::PaginatedCursor::After(ref after) => {
             has_more_before = true;
             (FetchCursor::Excluding(after.clone()), display_order)
 
@@ -193,7 +193,7 @@ pub fn fetch_paginated<T: Record>(
     };
 
     query = query.cursor(cursor);
-    query = query.order(query_order);
+    query = query.direction(query_order);
     query = query.limit(request.limit);
 
     let fetch_result = crate::query::fetch_records::<T, _>(&tree, query)?;
@@ -225,6 +225,7 @@ pub fn fetch_paginated<T: Record>(
 
 #[cfg(test)]
 mod tests {
+    use proto::Direction;
     use serde::{Deserialize, Serialize};
 
     use super::*;
@@ -236,7 +237,7 @@ mod tests {
         pub value: String,
     }
 
-    impl Record for TestRecord {
+    impl proto::Record for TestRecord {
         type ID = usize;
         fn id(&self) -> &Self::ID {
             &self.id
@@ -261,11 +262,13 @@ mod tests {
                 .unwrap();
         }
 
-        // now lets run fetch with
-        let query = FetchRecordQuery::<usize>::new().limit(5);
+        // now lets run fetch
+        let query = FetchRecordQuery::<usize>::new()
+            .limit(5)
+            .direction(Direction::Ascending);
         let result = fetch_records::<TestRecord, _>(&tree, query).unwrap();
 
-        // the default is ascending, so the first 5 should be the oldest 5
+        //the first 5 should be the oldest 5
         assert_eq!(result.items.len(), 5);
         assert_eq!(result.ids(), &[0, 1, 2, 3, 4]);
 
@@ -298,7 +301,7 @@ mod tests {
         let query = FetchRecordQuery::<usize>::new()
             .cursor(FetchCursor::Excluding(10))
             .limit(5)
-            .order(Direction::Descending);
+            .direction(Direction::Descending);
         let result = fetch_records::<TestRecord, _>(&tree, query).unwrap();
         assert_eq!(result.items.len(), 5);
         assert_eq!(result.ids(), &[9, 8, 7, 6, 5]);
@@ -309,7 +312,7 @@ mod tests {
         let query = FetchRecordQuery::<usize>::new()
             .cursor(FetchCursor::Excluding(5))
             .limit(5)
-            .order(Direction::Descending);
+            .direction(Direction::Descending);
         let result = fetch_records::<TestRecord, _>(&tree, query).unwrap();
         assert_eq!(result.items.len(), 5);
         assert_eq!(result.ids(), &[4, 3, 2, 1, 0]);
@@ -330,7 +333,7 @@ mod tests {
         let query = FetchRecordQuery::<usize>::new()
             .cursor(FetchCursor::Excluding(0))
             .limit(5)
-            .order(Direction::Descending);
+            .direction(Direction::Descending);
         let result = fetch_records::<TestRecord, _>(&tree, query).unwrap();
         assert_eq!(result.items.len(), 0);
         assert!(!result.more_records);
@@ -339,7 +342,7 @@ mod tests {
         let query = FetchRecordQuery::<usize>::new()
             .cursor(FetchCursor::Excluding(11))
             .limit(5)
-            .order(Direction::Ascending);
+            .direction(Direction::Ascending);
         let result = fetch_records::<TestRecord, _>(&tree, query).unwrap();
         assert_eq!(result.items.len(), 0);
         assert!(!result.more_records);

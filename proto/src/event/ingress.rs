@@ -6,7 +6,7 @@ use ulid::Ulid;
 // use crate::query::Record;
 use bytes::Bytes;
 
-use crate::record::Record;
+use crate::record::{Direction, PaginatedCursor, Record};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct IngressLog {
@@ -29,15 +29,15 @@ impl Record for IngressLog {
 
 #[derive(Serialize, Deserialize)]
 pub struct FetchIngressLogsRequest {
-    pub order: Option<String>,
-    pub limit: Option<usize>,
+    pub direction: Direction,
+    pub limit: usize,
     pub cursor: PaginatedCursor,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct FetchIngressLogsResponse {
     pub items: Vec<(Vec<u8>, IngressLog)>,
-    pub limit: Option<usize>,
+    pub limit: usize,
     pub has_more_before: bool,
     pub has_more_after: bool,
 }
