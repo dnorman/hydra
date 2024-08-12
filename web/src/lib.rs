@@ -1,6 +1,7 @@
 mod client;
 mod utils;
 
+pub use hydra_proto as proto;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
