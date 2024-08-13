@@ -9,6 +9,8 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["console_error_panic_hook"]
+start = []
+react = ["start"]
 
 [dependencies]
 hydra-proto = { path = "../proto" }

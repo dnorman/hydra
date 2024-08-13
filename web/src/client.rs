@@ -15,12 +15,6 @@ use web_sys::{CloseEvent, Event, MessageEvent, WebSocket};
 
 const MAX_RECONNECT_DELAY: u64 = 10000;
 
-#[wasm_bindgen(start)]
-pub async fn start() -> Result<(), JsValue> {
-    wasm_logger::init(wasm_logger::Config::default());
-    Ok(())
-}
-
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ConnectionState {
     None,
