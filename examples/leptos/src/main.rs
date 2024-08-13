@@ -1,12 +1,15 @@
+use hydra_web::client::Client;
 use leptos::*;
 
 fn main() {
     console_error_panic_hook::set_once();
-    leptos::mount_to_body(|| view! { <App/> })
+
+    let client = Client::new().unwrap();
+    leptos::mount_to_body(|| view! { <App client=client/> })
 }
 
 #[component]
-fn App() -> impl IntoView {
+fn App(client: Client) -> impl IntoView {
     let (count, set_count) = create_signal(0);
 
     view! {
@@ -14,6 +17,7 @@ fn App() -> impl IntoView {
             on:click=move |_| {
                 // on stable, this is set_count.set(3);
                 set_count(3);
+                client.send_message(&format!("the counter state is {}", count()));
             }
         >
             "Click me: "
